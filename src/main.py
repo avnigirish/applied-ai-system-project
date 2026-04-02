@@ -15,8 +15,17 @@ from recommender import load_songs, recommend_songs
 def main() -> None:
     songs = load_songs("data/songs.csv") 
 
-    # Starter example profile
-    user_prefs = {"genre": "pop", "mood": "happy", "energy": 0.8}
+    # Taste profile: a focused late-night indie listener
+    # - Prefers indie pop with a moody emotional tone
+    # - Moderate-to-high energy (alert but not intense)
+    # - Not acoustic-leaning — comfortable with produced, electronic textures
+    # - valence kept low-mid to allow moody/bittersweet songs through
+    user_prefs = {
+        "genre":         "indie pop",
+        "mood":          "moody",
+        "target_energy": 0.72,
+        "likes_acoustic": False,
+    }
 
     recommendations = recommend_songs(user_prefs, songs, k=5)
 

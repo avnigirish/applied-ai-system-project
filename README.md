@@ -62,7 +62,69 @@ Some prompts to answer:
 
   - **Ranking Rule** — after all songs are scored, the list is sorted descending by score and the top-k results are returned. Ties are broken by `energy` proximity.
 
+### Algorithm Recipe
+
+A content-based recommender using an **additive point system**. No machine learning — fully transparent and rule-based. Max possible score: **4.5 pts**.
+
+**Scoring Rule** (one song at a time):
+
+```
+score = 2.0 × genre_match
+      + 1.0 × mood_match
+      + 1.0 × (1 - |target_energy - song.energy|)
+      + 0.5 × (1 - |acousticness_target - song.acousticness|)
+```
+
+- Categorical features (genre, mood): exact match = 1, no match = 0
+- Numeric features (energy, acousticness): inverted absolute difference — proximity to the user's target is rewarded, not raw magnitude
+- `acousticness_target` is derived from `likes_acoustic`: `0.8` if `True`, `0.2` if `False`
+
+**Feature Points:**
+
+| Feature | Points | Max | Reasoning |
+|---|---|---|---|
+| `genre` | +2.0 if match | 2.0 | Strongest taste boundary — a jazz fan won't tolerate EDM |
+| `mood` | +1.0 if match | 1.0 | Captures listener intent (study vs. party) |
+| `energy` | +1.0 × proximity | 1.0 | Most discriminating numeric axis — workout vs. sleep |
+| `acousticness` | +0.5 × proximity | 0.5 | Texture/production feel — organic vs. electronic |
+
+**Ranking Rule** (across the catalog):
+1. Run the scoring rule against every song
+2. Sort descending by score
+3. Return top-k results; break ties by energy proximity
+
+### Known Limitation
+
+With only one song per genre in the catalog, the +2.0 genre points are too decisive — they surface the single genre-matching song regardless of mood fit. If extending the catalog, consider lowering genre to +1.0 and adding valence as a scored feature to better separate emotional tone within a genre.
+
 You can include a simple diagram or bullet list if helpful.
+
+```mermaid
+flowchart TD
+    A([User Preferences\ngenre · mood · target_energy · likes_acoustic]) --> B
+
+    B[Load songs.csv\ninto list of dicts] --> C
+
+    C{For each song\nin catalog} --> D
+
+    D[Score = 0] --> E
+    E{genre\nmatches?}
+    E -- Yes --> F[+2.0]
+    E -- No  --> G
+    F --> G{mood\nmatches?}
+    G -- Yes --> H[+1.0]
+    G -- No  --> I
+    H --> I[+1.0 × energy proximity\n1 - abs target - song.energy]
+    I --> J[+0.5 × acousticness proximity\n1 - abs target - song.acousticness]
+    J --> K[Attach explanation string]
+    K --> L[(scored_songs list\nmax score 4.5)]
+
+    C -- all songs done --> L
+
+    L --> M[Sort descending by score\nties broken by energy proximity]
+    M --> N[Slice top K]
+    N --> O([Output: title · score · because...])
+```
 
 ---
 
