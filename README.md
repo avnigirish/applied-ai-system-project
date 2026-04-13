@@ -373,11 +373,72 @@ Profile: EDGE: Max Acoustic Preference
 
 ## Experiments You Tried
 
-Use this section to document the experiments you ran. For example:
+### Experiment 1 — Does Gym Hero deserve #1 for High-Energy Pop?
 
-- What happened when you changed the weight on genre from 2.0 to 0.5
-- What happened when you added tempo or valence to the score
-- How did your system behave for different types of users
+**Profile:** `genre='pop', mood='intense', energy=0.92, likes_acoustic=False`
+**Result:** Gym Hero scored 4.42 / 4.50
+
+Breaking down why it ranked first:
+
+| Signal | Calculation | Points |
+|---|---|---|
+| genre match | `pop == pop` | +2.0 |
+| mood match | `intense == intense` | +1.0 |
+| energy proximity | `1 - \|0.92 - 0.93\|` | +0.99 |
+| acousticness proximity | `1 - \|0.2 - 0.05\|` | +0.43 |
+| **Total** | | **4.42** |
+
+**Musical intuition check:** Yes — this feels right. Gym Hero is literally named for a workout context, and all four signals fire in the same direction. This is the recommender working as intended.
+
+---
+
+### Experiment 2 — The Blue Porch problem (adversarial profile)
+
+**Profile:** `genre='soul', mood='sad', energy=0.90, likes_acoustic=False`
+**Result:** Blue Porch ranked #1 with 3.58 — but it has energy=0.29, far from the target of 0.90.
+
+**Why it "won" despite the mismatch:**
+- genre match (`soul`) → +2.0
+- mood match (`sad`) → +1.0
+- Combined categorical points: +3.0
+- Energy loss: `1 - |0.90 - 0.29|` = only +0.39 instead of +1.0 (lost 0.61 pts)
+- Net: 3.0 − 0.61 = still wins easily
+
+**Musical intuition check:** No — this does not feel right. Someone who wants high-energy sad music (think aggressive hip-hop with dark lyrics) would not want a quiet, slow soul ballad. The +2.0 genre weight is too dominant when the catalog only has one soul song, leaving no room for energy to differentiate.
+
+**Takeaway:** The genre weight is not too strong in principle — it becomes too strong when the catalog has only 1 song per genre. With more songs per genre, energy and mood would have real competition within the genre bucket.
+
+---
+
+### Experiment 3 — Genre as a near-deterministic selector
+
+Across all 6 profiles, every #1 result was the single song matching the requested genre. The catalog has ~1 song per genre, which means:
+- A genre match = automatic +2.0 pts (44% of max score)
+- No other song in the catalog can compete with that head start
+
+**What would change with a larger catalog:** If there were 5 lofi songs, genre would no longer pick the winner — mood and energy would have to differentiate within the genre bucket, which is the intended behavior.
+
+---
+
+### Experiment 4 — Weight Shift: genre ÷2, energy ×2
+
+**Change tested:** `genre: +2.0 → +1.0`, `energy: +1.0 → +2.0` (max score stays 4.5)
+
+**Key observations:**
+
+| Profile | Old #1 | New #1 | Changed? |
+|---|---|---|---|
+| High-Energy Pop | Gym Hero (4.42) | Gym Hero (4.41) | No — all signals still aligned |
+| Chill Lofi | Library Rain (4.44) | Library Rain (4.41) | No |
+| Deep Intense Rock | Storm Runner (4.44) | Storm Runner (4.43) | No |
+| **EDGE: High Energy + Sad Mood** | **Blue Porch (3.58)** | **Blue Porch (2.97)** | **Score dropped 0.61 pts but still #1** |
+
+**What changed meaningfully:**
+- **High-Energy Pop #2 and #3 swapped:** Storm Runner (rock, intense) jumped ahead of Sunrise City (pop, happy) — energy proximity now outweighs genre label, which feels more accurate for a "workout" listener
+- **EDGE adversarial case improved but not fixed:** Blue Porch's lead over Storm Runner shrank from 2.14 pts to only 0.54 pts. A slightly larger energy weight would flip the result entirely
+- **Score spreads compressed:** The gap between #1 and #2 narrowed in most profiles, meaning more competitive rankings with less genre lock-in
+
+**More accurate or just different?** More accurate for the adversarial case — energy doubling correctly penalizes Blue Porch's low energy. But the #1 results didn't change because those profiles had perfect alignment on all signals. The original weights are restored for the final version; this experiment confirms genre dominance is a catalog-size problem more than a weight problem.
 
 ---
 
