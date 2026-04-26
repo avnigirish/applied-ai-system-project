@@ -132,6 +132,24 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
     return score, reasons
 
 
+_MAX_SCORE = 4.5
+
+
+def confidence_score(score: float) -> float:
+    """Normalize a raw 0–4.5 score to a 0–1 confidence value."""
+    return round(min(max(score / _MAX_SCORE, 0.0), 1.0), 3)
+
+
+def confidence_band(score: float) -> str:
+    """Return 'high' (≥0.75), 'medium' (≥0.45), or 'low' for a raw score."""
+    c = confidence_score(score)
+    if c >= 0.75:
+        return "high"
+    if c >= 0.45:
+        return "medium"
+    return "low"
+
+
 def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
     """Score every song, sort descending, return top-k as (song, score, explanation) tuples."""
     if not songs:
@@ -152,6 +170,25 @@ def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tup
 
     scored.sort(key=lambda x: (x[1], -abs(user_prefs["target_energy"] - x[0]["energy"])), reverse=True)
     results = scored[:k]
+
     if results:
-        logger.info("Top result: '%s' score=%.2f", results[0][0]["title"], results[0][1])
+        top_song, top_score, _ = results[0]
+        band = confidence_band(top_score)
+        logger.info("Top result: '%s' score=%.2f confidence=%.2f (%s)",
+                    top_song["title"], top_score, confidence_score(top_score), band)
+        if band == "low":
+            logger.warning(
+                "LOW CONFIDENCE (%.2f): best match for genre=%r is '%s' — "
+                "genre may be absent from catalog or preferences conflict.",
+                confidence_score(top_score), user_prefs.get("genre"), top_song["title"],
+            )
+        elif band == "medium":
+            catalog_genres = {s["genre"] for s in songs}
+            if user_prefs.get("genre") not in catalog_genres:
+                logger.warning(
+                    "DEGRADED RESULTS: genre=%r not in catalog — "
+                    "recommendations are mood/energy fallbacks only.",
+                    user_prefs.get("genre"),
+                )
+
     return results

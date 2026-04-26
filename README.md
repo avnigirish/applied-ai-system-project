@@ -315,44 +315,84 @@ Requiring an API key to run any part of the program creates a hard dependency th
 
 ## Testing Summary
 
-### What the tests cover
+Three reliability mechanisms are layered on top of each other, each catching a different class of problem.
 
-The 24-test suite in [`tests/test_recommender.py`](tests/test_recommender.py) is split into three groups:
+### 1. Automated unit tests — `tests/test_recommender.py`
 
-**Recommender engine (no API, deterministic):**
-- `Recommender.recommend()` returns songs in the correct order with the correct count
-- `Recommender.explain_recommendation()` returns non-empty strings that mention genre
-- `score_song` awards exactly +2.0 for genre match and +1.0 for mood match
-- `recommend_songs` sorts descending and respects `k`
-- Empty catalog returns an empty list without crashing
+Run with `pytest`. 24 tests, all pass, no API key required, completes in under 1 second.
 
-**Keyword parser (no API):**
-- Gym query → high energy + intense mood
-- Study query → lofi genre + low energy
-- Acoustic query → `likes_acoustic=True`
-- All four required keys always present
-- Energy value always in [0.0, 1.0]
+| Group | Tests | What they catch |
+|---|---|---|
+| Recommender engine | 13 | Wrong sort order, bad scores, off-by-one on `k`, empty-catalog crash |
+| Keyword parser | 5 | Missing output keys, out-of-range energy, wrong genre/mood for known phrases |
+| Claude API contracts (mocked) | 6 | Tool-use call shape, graceful fallback on exception, fallback when no key set |
 
-**Claude API contracts (mocked — no real network calls):**
-- `parse_user_query` calls `messages.create` with the correct tool and returns structured prefs
-- `generate_ai_explanation` calls `messages.create` and returns the model's text
-- Both functions fall back gracefully when the API raises an exception
-- `parse_user_query` falls back to keyword parsing when no API key is set
+### 2. Confidence scoring — built into every recommendation
+
+Every result carries a normalized confidence value (`score / 4.5`, rounded to 3 decimal places) and a band label:
+
+| Band | Confidence | Meaning |
+|---|---|---|
+| high | ≥ 0.75 | Genre + at least one other signal fired |
+| medium | 0.45–0.74 | Partial match — genre may be missing or mood conflicts |
+| low | < 0.45 | Minimal signal match — treat results with caution |
+
+The logger emits a `WARNING` whenever the top result is `medium` band and the requested genre is absent from the catalog, or `low` band for any reason — so problems surface in logs without crashing the program.
+
+### 3. Reliability evaluation harness — `tests/eval_reliability.py`
+
+Run with `python tests/eval_reliability.py`. Evaluates 6 known profiles and separates *consistency* (does the system reliably produce the expected deterministic output?) from *quality* (is that output actually a good musical match?).
+
+```
+======================================================================
+  Music Recommender — Reliability Evaluation
+======================================================================
+
+  PASS              ·  High-Energy Pop
+    Got      : 'Gym Hero'       Score: 4.42 / 4.50  confidence 0.98 (high)
+
+  PASS              ·  Chill Lofi
+    Got      : 'Library Rain'   Score: 4.44 / 4.50  confidence 0.99 (high)
+
+  PASS              ·  Deep Intense Rock
+    Got      : 'Storm Runner'   Score: 4.44 / 4.50  confidence 0.99 (high)
+
+  PASS (known flaw) ·  EDGE: High Energy + Sad Mood
+    Got      : 'Blue Porch'     Score: 3.58 / 4.50  confidence 0.80 (high)
+    Note     : genre+mood (+3.0) overwhelms energy mismatch — musically wrong
+
+  PASS (known flaw) ·  EDGE: Unknown Genre (bossa nova)
+    Got      : 'Dust Road Home' Score: 2.44 / 4.50  confidence 0.54 (medium)
+    Note     : genre not in catalog — DEGRADED WARNING fires in logs
+
+  PASS              ·  EDGE: Max Acoustic / Perfect Energy
+    Got      : 'Rainy Sunday'   Score: 4.42 / 4.50  confidence 0.98 (high)
+
+======================================================================
+  Consistency : 6/6 expected outputs matched
+  Quality     : 4/6 results musically correct
+                (2 known adversarial cases expose design limits)
+  Confidence  : avg=0.88  min=0.54  max=0.99
+======================================================================
+```
+
+**One-line summary:** 6/6 consistency checks passed; 4/6 results musically correct; average confidence 0.88 (drops to 0.54 when genre is missing from catalog).
+
+### 4. Structured logging
+
+Every run emits `INFO`-level logs for each query (genre, mood, energy, k), the top result (title, score, confidence, band), and `WARNING`-level alerts for degraded or low-confidence results. Set `LOG_LEVEL=DEBUG` to see per-song scoring detail. This means any unexpected behavior leaves a traceable record without modifying any code.
 
 ### What worked
 
-- The scoring logic is entirely deterministic, so the unit tests are easy to write and always pass. Running the same profile twice gives the same ranked list with the same scores.
-- Mocking the Claude client with `unittest.mock` kept the tests fast (< 0.5 seconds for all 24) and completely independent of network state or API quotas.
-- The keyword fallback was straightforward to test because its inputs and outputs are simple dictionaries.
+The scoring engine is fully deterministic, so unit tests always pass and the evaluation harness always produces the same numbers. Mocking the Claude client with `unittest.mock` kept all 24 tests under 1 second and independent of network state. Separating *consistency* from *quality* in the eval harness was the most useful decision — it forced an honest accounting of where the system is reliable vs. where it's reliably wrong.
 
 ### What didn't work initially
 
-- The `Recommender` class stubs (`recommend()` and `explain_recommendation()`) were placeholder implementations that just returned `self.songs[:k]` and `"Explanation placeholder"` — the tests caught this immediately and required real implementations.
-- When running as `python -m src.main` from the project root, Python adds the root to `sys.path` rather than `src/`, breaking bare imports like `from recommender import ...`. Fixed by inserting `os.path.dirname(__file__)` at the top of `main.py`.
+The `Recommender` class stubs returned `self.songs[:k]` and `"Explanation placeholder"` — the tests caught both immediately. Running `python -m src.main` from the project root broke bare imports (`from recommender import ...`) because Python adds the root, not `src/`, to `sys.path`; fixed with `sys.path.insert(0, os.path.dirname(__file__))`.
 
 ### What this taught about testing AI systems
 
-The most important insight was that **mocking is not the same as testing**. The mocked Claude tests verify that the code calls the API with the right shape and handles exceptions gracefully — but they can't verify that Claude actually returns useful preferences for a given query. That quality check requires running against the real API and evaluating outputs by hand. For a production system, you'd want a separate evaluation harness that periodically runs known queries against the live model and checks whether the parsed preferences fall within expected ranges.
+**Mocking is not the same as evaluating.** The mocked Claude tests verify that the code calls the API correctly and handles failures gracefully — but they say nothing about whether Claude actually returns good preferences for a given query. That quality check requires running against the live model and reviewing outputs by hand, which is what the eval harness approximates. The confidence score made one problem immediately visible that the raw scores hid: the "bossa nova" profile's best result (2.44/4.50, confidence 0.54) looks like a reasonable score on paper, but the `medium` band and the `DEGRADED RESULTS` log warning signal that the system is operating outside its reliable range — something a user reading only the ranked list would never know.
 
 ---
 
@@ -377,7 +417,8 @@ applied-ai-system-final/
 │   ├── recommender.py         # Scoring engine + OOP interface
 │   └── ai_layer.py            # Claude API integration + keyword fallback
 ├── tests/
-│   └── test_recommender.py    # 24 tests (no API key required)
+│   ├── test_recommender.py    # 24 unit tests (no API key required)
+│   └── eval_reliability.py    # 6-case reliability harness with confidence scoring
 ├── model_card.md              # Bias, limitations, and evaluation writeup
 ├── reflection.md              # Profile-by-profile comparison notes
 ├── requirements.txt

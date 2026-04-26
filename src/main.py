@@ -15,7 +15,7 @@ import sys
 # Ensure src/ is on the path regardless of how this module is invoked.
 sys.path.insert(0, os.path.dirname(__file__))
 
-from recommender import load_songs, recommend_songs, score_song
+from recommender import load_songs, recommend_songs, score_song, confidence_score, confidence_band
 from ai_layer import parse_user_query, generate_ai_explanation
 
 # ---------------------------------------------------------------------------
@@ -50,9 +50,11 @@ def _print_recommendations(label: str, user_prefs: dict, songs: list, k: int = 5
         else:
             explanation = rule_explanation
 
+        conf = confidence_score(score)
+        band = confidence_band(score)
         print(f"\n  #{i}  {song['title']} — {song['artist']}")
-        print(f"       Score : {score:.2f} / 4.50")
-        print(f"       Why   : {explanation}")
+        print(f"       Score      : {score:.2f} / 4.50  (confidence {conf:.2f} — {band})")
+        print(f"       Why        : {explanation}")
 
     print()
 
