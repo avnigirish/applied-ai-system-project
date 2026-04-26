@@ -149,7 +149,10 @@ def test_recommend_songs_empty_catalog():
 # AI layer tests (keyword parser — no API key needed)
 # ---------------------------------------------------------------------------
 
-from src.ai_layer import parse_user_query, generate_ai_explanation, _keyword_parse
+from src.ai_layer import (
+    parse_user_query, generate_ai_explanation, generate_ai_explanation_fewshot,
+    catalog_reasoning_step, _keyword_parse,
+)
 
 
 def test_keyword_parse_gym_query():
@@ -257,3 +260,130 @@ def test_generate_ai_explanation_falls_back_on_exception(mock_get_client):
     reasons = ["genre match (+2.0)", "mood match (+1.0)"]
     result = generate_ai_explanation(_prefs(), song, 3.0, reasons)
     assert result == ", ".join(reasons)
+
+
+# ---------------------------------------------------------------------------
+# Stretch: catalog_reasoning_step tests (mocked)
+# ---------------------------------------------------------------------------
+
+_CATALOG_GENRES = ["pop", "lofi", "rock", "jazz", "classical", "soul"]
+_CATALOG_MOODS  = ["happy", "chill", "intense", "sad", "melancholic"]
+
+
+@patch("src.ai_layer._get_client", return_value=None)
+def test_catalog_reasoning_proceeds_when_genre_available(_mock):
+    prefs = _prefs(genre="pop", mood="happy")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    assert result["decision"] == "proceed"
+    assert result["genre_in_catalog"] is True
+
+
+@patch("src.ai_layer._get_client", return_value=None)
+def test_catalog_reasoning_suggests_alternative_for_known_genre(_mock):
+    prefs = _prefs(genre="bossa nova", mood="relaxed")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    assert result["decision"] == "suggest_alternative"
+    assert result["suggested_genre"] == "jazz"
+    assert result["genre_in_catalog"] is False
+
+
+@patch("src.ai_layer._get_client", return_value=None)
+def test_catalog_reasoning_warns_degraded_for_unknown_genre(_mock):
+    prefs = _prefs(genre="xylophone-core", mood="happy")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    assert result["decision"] == "warn_degraded"
+    assert result["suggested_genre"] == ""
+
+
+@patch("src.ai_layer._get_client", return_value=None)
+def test_catalog_reasoning_returns_all_required_keys(_mock):
+    prefs = _prefs(genre="pop", mood="happy")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    for key in ("genre_in_catalog", "mood_in_catalog", "decision", "suggested_genre", "reasoning"):
+        assert key in result
+
+
+def _make_catalog_tool_block(decision_data: dict):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.name = "catalog_decision"
+    block.input = decision_data
+    return block
+
+
+@patch("src.ai_layer._get_client")
+def test_catalog_reasoning_calls_claude(mock_get_client):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.content = [_make_catalog_tool_block({
+        "genre_in_catalog": False, "mood_in_catalog": True,
+        "decision": "suggest_alternative", "suggested_genre": "jazz",
+        "reasoning": "Bossa nova is closest to jazz.",
+    })]
+    mock_client.messages.create.return_value = mock_response
+
+    prefs = _prefs(genre="bossa nova", mood="relaxed")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    assert result["decision"] == "suggest_alternative"
+    assert result["suggested_genre"] == "jazz"
+    mock_client.messages.create.assert_called_once()
+
+
+@patch("src.ai_layer._get_client")
+def test_catalog_reasoning_falls_back_on_exception(mock_get_client):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.messages.create.side_effect = RuntimeError("timeout")
+
+    prefs = _prefs(genre="pop", mood="happy")
+    result = catalog_reasoning_step(prefs, _CATALOG_GENRES, _CATALOG_MOODS)
+    assert result["decision"] == "proceed"  # safe fallback
+
+
+# ---------------------------------------------------------------------------
+# Stretch: few-shot explanation tests (mocked)
+# ---------------------------------------------------------------------------
+
+@patch("src.ai_layer._get_client", return_value=None)
+def test_fewshot_explanation_fallback_without_key(_mock):
+    song = _song_dict()
+    reasons = ["genre match (+2.0)", "mood match (+1.0)"]
+    result = generate_ai_explanation_fewshot(_prefs(), song, 4.5, reasons)
+    assert isinstance(result, str)
+    assert result.strip() != ""
+
+
+@patch("src.ai_layer._get_client")
+def test_fewshot_explanation_calls_claude(mock_get_client):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(
+        text="This one hits like a summer afternoon you didn't plan for."
+    )]
+    mock_client.messages.create.return_value = mock_response
+
+    song = _song_dict()
+    result = generate_ai_explanation_fewshot(_prefs(), song, 4.2, ["genre match (+2.0)"])
+    assert "summer" in result
+    mock_client.messages.create.assert_called_once()
+
+
+@patch("src.ai_layer._get_client")
+def test_fewshot_prompt_includes_examples(mock_get_client):
+    """Verify the few-shot prompt actually contains the example songs."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="A sensory explanation.")]
+    mock_client.messages.create.return_value = mock_response
+
+    song = _song_dict()
+    generate_ai_explanation_fewshot(_prefs(), song, 4.0, ["genre match (+2.0)"])
+
+    call_args = mock_client.messages.create.call_args
+    prompt_content = call_args[1]["messages"][0]["content"]
+    assert "Library Rain" in prompt_content
+    assert "Gym Hero" in prompt_content
+    assert "Rainy Sunday" in prompt_content

@@ -16,7 +16,12 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from recommender import load_songs, recommend_songs, score_song, confidence_score, confidence_band
-from ai_layer import parse_user_query, generate_ai_explanation
+from ai_layer import (
+    parse_user_query,
+    catalog_reasoning_step,
+    generate_ai_explanation,
+    generate_ai_explanation_fewshot,
+)
 
 # ---------------------------------------------------------------------------
 # Logging setup — INFO to stdout, DEBUG available via LOG_LEVEL=DEBUG
@@ -101,8 +106,15 @@ def run_standard_profiles(songs: list) -> None:
 # Natural-language / AI mode
 # ---------------------------------------------------------------------------
 
-def run_ai_mode(songs: list, query: str | None = None) -> None:
-    """Parse a free-text music request with Claude, then show AI-explained recommendations."""
+def run_ai_mode(songs: list, query: str | None = None, style: str = "default") -> None:
+    """
+    Four-step agentic chain with observable intermediate output:
+
+      [Step 1/4] Parse natural-language query → structured preferences
+      [Step 2/4] Catalog reasoning → decide: proceed / suggest_alternative / warn_degraded
+      [Step 3/4] Score and rank all songs
+      [Step 4/4] Generate explanation (zero-shot or few-shot based on --style)
+    """
     if query is None:
         print("\nDescribe the kind of music you want (e.g. 'something chill for studying'):")
         query = input("> ").strip()
@@ -110,24 +122,66 @@ def run_ai_mode(songs: list, query: str | None = None) -> None:
             logger.warning("Empty query entered; exiting.")
             sys.exit(0)
 
-    logger.info("AI mode query: %r", query)
+    logger.info("AI mode query: %r  style=%s", query, style)
 
+    # ── Step 1: Parse query ───────────────────────────────────────────────────
+    print(f"\n[Step 1/4] Parsing query: {query!r}")
     try:
         prefs = parse_user_query(query)
-    except EnvironmentError as exc:
-        print(f"\nError: {exc}")
-        sys.exit(1)
     except ValueError as exc:
-        print(f"\nCould not parse your request: {exc}")
+        print(f"  Error: {exc}")
         sys.exit(1)
-
-    _print_recommendations(
-        label=f"AI Query: {query!r}",
-        user_prefs=prefs,
-        songs=songs,
-        k=5,
-        use_ai_explanations=True,
+    print(
+        f"  → genre={prefs['genre']!r}, mood={prefs['mood']!r}, "
+        f"energy={prefs['target_energy']:.2f}, acoustic={prefs['likes_acoustic']}"
     )
+
+    # ── Step 2: Catalog reasoning ─────────────────────────────────────────────
+    catalog_genres = list({s["genre"] for s in songs})
+    catalog_moods  = list({s["mood"]  for s in songs})
+    print(f"\n[Step 2/4] Checking catalog coverage ({len(catalog_genres)} genres, {len(catalog_moods)} moods)...")
+    reasoning = catalog_reasoning_step(prefs, catalog_genres, catalog_moods)
+
+    decision = reasoning["decision"]
+    print(f"  → Decision  : {decision}")
+    print(f"  → Reasoning : {reasoning['reasoning']}")
+
+    if decision == "suggest_alternative":
+        alt_genre = reasoning["suggested_genre"]
+        print(f"  → Adapting  : genre {prefs['genre']!r} → {alt_genre!r}")
+        prefs = dict(prefs, genre=alt_genre)
+    elif decision == "warn_degraded":
+        print("  → Warning   : genre not in catalog — recommendations are mood/energy fallbacks only")
+
+    # ── Step 3: Score and rank ────────────────────────────────────────────────
+    print(f"\n[Step 3/4] Scoring {len(songs)} songs...")
+    recommendations = recommend_songs(prefs, songs, k=5)
+    if recommendations:
+        top = recommendations[0]
+        print(f"  → Top result: {top[0]['title']!r} (score={top[1]:.2f}, confidence={confidence_score(top[1]):.2f})")
+
+    # ── Step 4: Generate explanations ─────────────────────────────────────────
+    explain_fn = generate_ai_explanation_fewshot if style == "vinyl" else generate_ai_explanation
+    style_label = "few-shot vinyl" if style == "vinyl" else "zero-shot"
+    print(f"\n[Step 4/4] Generating explanations ({style_label})...")
+
+    label = f"AI Query ({style_label}): {query!r}"
+    print(f"\nProfile: {label}")
+    print(f"  genre={prefs['genre']!r}, mood={prefs['mood']!r}, "
+          f"energy={prefs['target_energy']}, acoustic={prefs['likes_acoustic']}")
+    print("=" * 58)
+    print(f"  Top {len(recommendations)} Recommendations")
+    print("=" * 58)
+
+    for i, (song, score, rule_explanation) in enumerate(recommendations, 1):
+        _, reasons = score_song(prefs, song)
+        explanation = explain_fn(prefs, song, score, reasons)
+        conf = confidence_score(score)
+        band = confidence_band(score)
+        print(f"\n  #{i}  {song['title']} — {song['artist']}")
+        print(f"       Score      : {score:.2f} / 4.50  (confidence {conf:.2f} — {band})")
+        print(f"       Why        : {explanation}")
+    print()
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +199,17 @@ def main() -> None:
         metavar="QUERY",
         help=(
             "Enable natural-language mode. "
-            "Pass a quoted query directly, or omit to enter one interactively. "
-            "Requires ANTHROPIC_API_KEY."
+            "Pass a quoted query directly, or omit to enter one interactively."
+        ),
+    )
+    parser.add_argument(
+        "--style",
+        choices=["default", "vinyl"],
+        default="default",
+        help=(
+            "Explanation style for --ai mode. "
+            "'default' = zero-shot helpful tone. "
+            "'vinyl' = few-shot 'warm vinyl DJ' voice (measurably different output)."
         ),
     )
     args = parser.parse_args()
@@ -155,9 +218,8 @@ def main() -> None:
     print(f"Loaded {len(songs)} songs from catalog.")
 
     if args.ai is not None:
-        # --ai with an inline query string, or --ai alone (interactive)
         inline_query = args.ai if isinstance(args.ai, str) else None
-        run_ai_mode(songs, query=inline_query)
+        run_ai_mode(songs, query=inline_query, style=args.style)
     else:
         run_standard_profiles(songs)
 

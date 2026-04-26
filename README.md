@@ -396,6 +396,61 @@ The `Recommender` class stubs returned `self.songs[:k]` and `"Explanation placeh
 
 ---
 
+## Responsible AI Reflection
+
+### Limitations and biases in this system
+
+The most significant structural bias is **genre lock-in**. With only one song per genre in the catalog, a genre match automatically awards +2.0 points — 44% of the maximum score — with no competition from other songs in the same genre. The system doesn't actually recommend the best song; it retrieves the only available song in that genre and ranks everything else by energy proximity. This creates a hidden fairness problem: genres that happen to have more catalog entries (lofi has three) behave more competitively than genres with one entry. If this were a real product, artists in under-represented genres would receive disproportionately fewer recommendations regardless of how well their music matched a listener's taste.
+
+A second bias disadvantages **acoustic-preference users**: 14 of 19 songs have acousticness below 0.5, skewing heavily toward electronic and produced textures. A user who prefers organic, acoustic sound consistently receives lower acousticness proximity scores than an equivalent user who prefers electronic music. The catalog itself encodes a bias — it reflects the taste of whoever built it, which is Western-centric, English-language, and electronically weighted. Genres like Latin, K-pop, blues, reggae, and most of the world's musical traditions are entirely absent.
+
+**Binary mood matching** also creates invisible dead zones. "Chill," "relaxed," and "focused" are treated as completely unrelated despite being emotionally adjacent. A user who wants "relaxed" music gets zero mood credit for the two "chill" songs in the catalog, even though those songs would almost certainly satisfy them.
+
+Finally, the system has no way to distinguish between a user whose taste is stable (same genre every day) and a user whose mood varies by context (studying vs. running vs. winding down). It treats every query as a single, static snapshot of a person's preferences, which is a significant oversimplification of how people actually listen to music.
+
+---
+
+### Could this system be misused?
+
+As a 19-song classroom demo, the direct misuse surface is small. But the same architecture deployed at scale introduces real risks worth naming:
+
+**Catalog manipulation.** Whoever controls `songs.csv` controls the recommendations. A commercial operator could load the catalog with songs they profit from and tune the weights to favor those entries without the user ever knowing. The system provides no transparency about who owns the catalog or what incentives shaped it.
+
+**Filter bubbles.** The scoring formula always returns the closest match, never deliberately surprising the user. Over time, this creates a feedback loop: a user who always asks for pop gets pop, stops being exposed to adjacent genres, and their taste profile narrows. Spotify explicitly injects serendipity into its recommendations to counteract this; this system has no equivalent mechanism.
+
+**Preference data collection.** In the Claude-powered mode, user queries (potentially including emotional context like "I'm feeling really sad today") are sent to an external API. Even though Anthropic has strong data policies, users should be informed when their input leaves the local system.
+
+**Mitigation approaches that would matter at production scale:** make catalog provenance transparent, add a diversity mechanism that occasionally surfaces results outside the closest match, and add a clear disclosure whenever user input is sent to an external service.
+
+---
+
+### What surprised me during reliability testing
+
+The most surprising result was that the adversarial "High Energy + Sad Mood" profile produced a **confidence score of 0.80 (high band)** for its top result — Blue Porch, a slow soul ballad that is clearly wrong for someone who wants high-energy music. I expected low confidence to correlate with bad recommendations. It doesn't. Confidence measures how strongly the signals agreed with each other, not whether the recommendation is actually good. Blue Porch earned 0.80 confidence precisely because genre and mood aligned so strongly — but that alignment was the source of the problem, not evidence of quality.
+
+This distinction — between a system being *reliably consistent* and being *reliably correct* — only became visible when I separated the two measurements in the evaluation harness. The 6/6 consistency result looked like a success. The 4/6 quality result told the real story. If I had only run the unit tests and looked at passing scores, I would have concluded the system worked fine.
+
+The other surprise was how clearly the `DEGRADED RESULTS` warning fired for the "bossa nova" profile. I expected to have to hunt for the failure in the output. Instead, the log line appeared immediately:
+
+```
+WARNING  recommender — DEGRADED RESULTS: genre='bossa nova' not in catalog —
+         recommendations are mood/energy fallbacks only.
+```
+
+Good logging doesn't just record what happened — it tells you *why* the output you're seeing is lower quality than usual. That single warning line communicates more about the bossa nova case than the entire ranked list does.
+
+---
+
+### Collaboration with AI during this project
+
+**One instance where the AI gave a genuinely helpful suggestion:**
+When building the natural-language input mode, I initially planned to write a regex-based parser. The AI suggested using Claude's tool-use API instead, where the model is forced to populate a typed JSON schema rather than return free text. This turned out to be the right call — it eliminated an entire category of output-validation code. The tool-use constraint means Claude can't return a malformed preference object: either it fills in all four required fields with the right types, or the call fails with a clear error. That's a meaningfully better design than parsing unstructured text.
+
+**One instance where the AI's suggestion was flawed:**
+When I first ran `python -m src.main`, the imports broke with `ModuleNotFoundError: No module named 'recommender'`. The AI had written the imports as bare names (`from recommender import ...`) — which works when you run the file directly from inside `src/`, but fails when Python is invoked from the project root, because `python -m src.main` adds the root directory to `sys.path`, not `src/`. The fix was one line (`sys.path.insert(0, os.path.dirname(__file__))`), but the original suggestion assumed a specific working directory without making that assumption explicit or testing it. The AI could reason about the code but couldn't anticipate how the module system would behave across different invocation contexts — that required running it and observing the failure.
+
+---
+
 ## Reflection
 
 Building this system clarified something that's easy to miss when using AI tools: **a recommender doesn't understand music — it measures distances**. When Gym Hero ranked #1 for a workout profile with a score of 4.42/4.50, it felt almost intelligent. But that feeling came entirely from choosing the right features to measure (energy, genre, mood), not from any comprehension of what makes a song satisfying to run to. The algorithm is four arithmetic operations. What makes it feel like a recommendation is whether those four features are actually good proxies for what the listener cares about.
@@ -406,6 +461,110 @@ Adding the Claude layer reinforced a different lesson: **language is where the h
 
 ---
 
+## Stretch Features
+
+Three of the four optional enhancements are implemented. Each builds directly on the core Agentic Workflow feature.
+
+### 1. Test Harness / Evaluation Script (+2 pts)
+
+`tests/eval_reliability.py` — already covered in the Testing Summary above. Runs 6 predefined profiles, reports consistency vs. quality separately, and prints confidence stats.
+
+```bash
+python tests/eval_reliability.py
+```
+
+Result: **6/6 consistency, 4/6 quality, avg confidence 0.88**.
+
+---
+
+### 2. Agentic Workflow Enhancement (+2 pts)
+
+The original workflow had two Claude calls (parse → explain) with no observable intermediate state. The enhanced version is a **four-step chain where every step prints its output** before the next begins:
+
+```
+[Step 1/4] Parsing query → structured preferences        (Claude tool-use)
+[Step 2/4] Catalog reasoning → proceed / adapt / warn    (Claude tool-use, NEW)
+[Step 3/4] Scoring 19 songs → ranked results             (rule-based engine)
+[Step 4/4] Generating explanations → final output        (Claude, zero-shot or few-shot)
+```
+
+Step 2 is the new reasoning step. Claude receives the user's preferences alongside the full list of available catalog genres and moods, then uses a typed tool to output a decision plus one-sentence reasoning. This makes the agent's decision-making observable rather than silent.
+
+**Sample output — query with a missing genre (bossa nova):**
+
+```
+[Step 1/4] Parsing query: 'something relaxed and jazzy for a Sunday morning'
+  → genre='bossa nova', mood='relaxed', energy=0.40, acoustic=True
+
+[Step 2/4] Checking catalog coverage (15 genres, 11 moods)...
+  → Decision  : suggest_alternative
+  → Reasoning : Bossa nova isn't in the catalog; jazz is the closest available match.
+  → Adapting  : genre 'bossa nova' → 'jazz'
+
+[Step 3/4] Scoring 19 songs...
+  → Top result: 'Coffee Shop Stories' (score=4.35, confidence=0.97)
+
+[Step 4/4] Generating explanations (zero-shot)...
+```
+
+Without the reasoning step, the system would silently degrade to mood/energy fallbacks and return Dust Road Home with a score of 2.44. With it, the agent detects the gap, explains its reasoning aloud, and adapts — returning Coffee Shop Stories at 4.35 instead.
+
+**Fallback (no API key):** uses the `_GENRE_FALLBACKS` mapping (bossa nova → jazz, blues → soul, etc.) so the adaptation step still works offline.
+
+---
+
+### 3. Fine-Tuning / Specialization (+2 pts)
+
+`generate_ai_explanation_fewshot()` in [src/ai_layer.py](src/ai_layer.py) uses **3 hand-crafted few-shot examples** to constrain Claude to a specific "warm vinyl DJ" voice. The baseline zero-shot function describes features; the few-shot version uses sensory language and concrete images.
+
+**How to use:**
+
+```bash
+python -m src.main --ai "something chill for late night studying" --style vinyl
+```
+
+**Side-by-side output for the same song (Midnight Coding — LoRoom):**
+
+| | Output |
+|---|---|
+| **Zero-shot** (`--style default`) | *This lofi track perfectly matches your chill, low-energy study preference with the smooth acoustic texture you're looking for.* |
+| **Few-shot vinyl** (`--style vinyl`) | *This one blurs into the background in exactly the right way — quiet enough to disappear into, present enough to keep the night from feeling empty.* |
+
+**Measurable differences:**
+
+| Metric | Zero-shot | Few-shot vinyl |
+|---|---|---|
+| Uses feature names (genre, energy, acoustic) | Yes | No |
+| Contains hedging ("perfectly matches", "looking for") | Yes | No |
+| Uses sensory/metaphor language | No | Yes |
+| Avg sentence length | ~22 words | ~18 words |
+
+The few-shot prompt embeds the three examples directly in the system message. Without an API key, the function falls back to the rule-based explanation string.
+
+---
+
+### Updated test count
+
+All three stretch features are covered by mocked tests. Total: **33 tests, all passing.**
+
+```
+pytest tests/test_recommender.py
+# 33 passed in 0.64s
+```
+
+New tests added:
+- `test_catalog_reasoning_proceeds_when_genre_available`
+- `test_catalog_reasoning_suggests_alternative_for_known_genre`
+- `test_catalog_reasoning_warns_degraded_for_unknown_genre`
+- `test_catalog_reasoning_returns_all_required_keys`
+- `test_catalog_reasoning_calls_claude`
+- `test_catalog_reasoning_falls_back_on_exception`
+- `test_fewshot_explanation_fallback_without_key`
+- `test_fewshot_explanation_calls_claude`
+- `test_fewshot_prompt_includes_examples`
+
+---
+
 ## Project Structure
 
 ```
@@ -413,11 +572,11 @@ applied-ai-system-final/
 ├── data/
 │   └── songs.csv              # 19-song catalog
 ├── src/
-│   ├── main.py                # CLI entry point
-│   ├── recommender.py         # Scoring engine + OOP interface
-│   └── ai_layer.py            # Claude API integration + keyword fallback
+│   ├── main.py                # CLI entry point; 4-step observable agentic chain
+│   ├── recommender.py         # Scoring engine, OOP interface, confidence scoring
+│   └── ai_layer.py            # Claude API: parse, catalog reasoning, explain (zero-shot + few-shot)
 ├── tests/
-│   ├── test_recommender.py    # 24 unit tests (no API key required)
+│   ├── test_recommender.py    # 33 unit tests (no API key required)
 │   └── eval_reliability.py    # 6-case reliability harness with confidence scoring
 ├── model_card.md              # Bias, limitations, and evaluation writeup
 ├── reflection.md              # Profile-by-profile comparison notes

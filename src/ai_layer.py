@@ -1,10 +1,16 @@
 """
-AI layer: Claude API integration for natural-language preference parsing
-and AI-generated song explanations.
+AI layer: Claude API integration.
 
-Agentic workflow:
-  1. parse_user_query   — Claude converts free-text input to structured preferences
-  2. generate_ai_explanation — Claude writes a conversational recommendation reason
+Four-step agentic workflow (observable intermediate steps):
+  Step 1  parse_user_query          — NL text → structured preferences (tool-use)
+  Step 2  catalog_reasoning_step    — inspect catalog coverage, decide how to proceed
+  Step 3  [scoring engine]          — rule-based scoring in recommender.py
+  Step 4  generate_ai_explanation   — conversational explanation (zero-shot or few-shot)
+
+Fine-tuning / specialization:
+  generate_ai_explanation_fewshot   — same task as Step 4 but constrained by
+                                       3 few-shot examples in a "warm vinyl DJ" voice;
+                                       output measurably differs from the zero-shot baseline
 """
 
 import logging
@@ -71,6 +77,100 @@ _VALID_MOODS = {
     "happy", "chill", "intense", "relaxed", "focused", "moody",
     "romantic", "nostalgic", "angry", "melancholic", "sad",
 }
+
+# ---------------------------------------------------------------------------
+# Step 2 — Catalog reasoning tool (Agentic Enhancement)
+# ---------------------------------------------------------------------------
+_CATALOG_REASONING_TOOL = {
+    "name": "catalog_decision",
+    "description": (
+        "After inspecting catalog coverage, decide how to proceed with these preferences."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "genre_in_catalog": {
+                "type": "boolean",
+                "description": "Is the requested genre present in the catalog?",
+            },
+            "mood_in_catalog": {
+                "type": "boolean",
+                "description": "Is the requested mood present in the catalog?",
+            },
+            "decision": {
+                "type": "string",
+                "enum": ["proceed", "suggest_alternative", "warn_degraded"],
+                "description": (
+                    "proceed: both genre and mood are available — run as-is. "
+                    "suggest_alternative: genre is missing but a close match exists. "
+                    "warn_degraded: genre is missing and no close alternative exists."
+                ),
+            },
+            "suggested_genre": {
+                "type": "string",
+                "description": (
+                    "If decision is suggest_alternative, the closest available genre. "
+                    "Empty string otherwise."
+                ),
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "One sentence explaining the decision.",
+            },
+        },
+        "required": [
+            "genre_in_catalog", "mood_in_catalog",
+            "decision", "suggested_genre", "reasoning",
+        ],
+    },
+}
+
+# Known closest-genre mappings used by the keyword fallback for Step 2
+_GENRE_FALLBACKS = {
+    "bossa nova": "jazz",
+    "reggae":     "folk",
+    "blues":      "soul",
+    "punk":       "rock",
+    "k-pop":      "pop",
+    "latin":      "pop",
+    "trap":       "hip-hop",
+    "gospel":     "soul",
+    "edm":        "electronic",
+    "indie":      "indie pop",
+}
+
+# ---------------------------------------------------------------------------
+# Step 4 — Few-shot examples (Fine-Tuning / Specialization stretch)
+# ---------------------------------------------------------------------------
+# Three hand-crafted examples that demonstrate a specific "warm vinyl DJ" voice.
+# Including these in the prompt measurably shifts Claude's output style vs.
+# the zero-shot baseline: shorter, more sensory, no hedging language.
+_FEW_SHOT_EXAMPLES = [
+    {
+        "song":    "Library Rain by Paper Lanterns",
+        "context": "listener wants lofi, chill, low energy, acoustic",
+        "explanation": (
+            "This one sounds like rain on a window — soft and unhurried, "
+            "the kind of track that turns studying into something almost peaceful."
+        ),
+    },
+    {
+        "song":    "Gym Hero by Max Pulse",
+        "context": "listener wants pop, intense, high energy, electronic",
+        "explanation": (
+            "Exactly what the name promises — it hits hard from the first beat "
+            "and doesn't let you slow down."
+        ),
+    },
+    {
+        "song":    "Rainy Sunday by Clara Voss",
+        "context": "listener wants classical, melancholic, very low energy, acoustic",
+        "explanation": (
+            "A solo piano piece that feels like a Sunday that decided to stay grey — "
+            "not sad exactly, just beautifully still."
+        ),
+    },
+]
 
 
 def _get_client() -> anthropic.Anthropic | None:
@@ -188,6 +288,168 @@ def generate_ai_explanation(
             song.get("title", "unknown"), exc,
         )
         return fallback
+
+
+def catalog_reasoning_step(
+    user_prefs: Dict,
+    catalog_genres: List[str],
+    catalog_moods: List[str],
+) -> Dict:
+    """
+    Step 2 of the agentic chain: inspect catalog coverage and decide how to proceed.
+
+    Returns a dict with keys:
+      genre_in_catalog  bool
+      mood_in_catalog   bool
+      decision          "proceed" | "suggest_alternative" | "warn_degraded"
+      suggested_genre   str  (non-empty only when decision == "suggest_alternative")
+      reasoning         str  (one-sentence explanation)
+
+    Uses Claude when ANTHROPIC_API_KEY is set; falls back to a rule-based check
+    with hardcoded genre-similarity mappings otherwise.
+    """
+    requested_genre = user_prefs.get("genre", "")
+    requested_mood  = user_prefs.get("mood", "")
+
+    genre_available = requested_genre in catalog_genres
+    mood_available  = requested_mood  in catalog_moods
+
+    logger.info(
+        "Catalog reasoning: genre=%r %s, mood=%r %s",
+        requested_genre, "✓" if genre_available else "✗",
+        requested_mood,  "✓" if mood_available  else "✗",
+    )
+
+    client = _get_client()
+
+    # --- Fallback path (no API key) ---
+    if client is None:
+        if genre_available:
+            return {
+                "genre_in_catalog": True,
+                "mood_in_catalog": mood_available,
+                "decision": "proceed",
+                "suggested_genre": "",
+                "reasoning": "Requested genre is available in catalog.",
+            }
+        alt = _GENRE_FALLBACKS.get(requested_genre, "")
+        if alt and alt in catalog_genres:
+            return {
+                "genre_in_catalog": False,
+                "mood_in_catalog": mood_available,
+                "decision": "suggest_alternative",
+                "suggested_genre": alt,
+                "reasoning": (
+                    f"'{requested_genre}' is not in catalog; "
+                    f"'{alt}' is the closest available match."
+                ),
+            }
+        return {
+            "genre_in_catalog": False,
+            "mood_in_catalog": mood_available,
+            "decision": "warn_degraded",
+            "suggested_genre": "",
+            "reasoning": (
+                f"'{requested_genre}' is not in catalog and no close alternative is known; "
+                "proceeding with mood/energy signals only."
+            ),
+        }
+
+    # --- Claude path ---
+    genres_str = ", ".join(sorted(catalog_genres))
+    moods_str  = ", ".join(sorted(catalog_moods))
+    prompt = (
+        f"A listener asked for: genre={requested_genre!r}, mood={requested_mood!r}.\n\n"
+        f"Available catalog genres: {genres_str}\n"
+        f"Available catalog moods:  {moods_str}\n\n"
+        "Inspect coverage and decide how to proceed using the catalog_decision tool."
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            tools=[_CATALOG_REASONING_TOOL],
+            tool_choice={"type": "tool", "name": "catalog_decision"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "catalog_decision":
+                result = dict(block.input)
+                logger.info(
+                    "Catalog decision: %s | suggested=%r | %s",
+                    result.get("decision"), result.get("suggested_genre"), result.get("reasoning"),
+                )
+                return result
+    except Exception as exc:
+        logger.warning("Catalog reasoning step failed (%s); defaulting to proceed.", exc)
+
+    # Final fallback: just proceed as-is
+    return {
+        "genre_in_catalog": genre_available,
+        "mood_in_catalog":  mood_available,
+        "decision": "proceed",
+        "suggested_genre": "",
+        "reasoning": "Could not complete reasoning step; proceeding with original preferences.",
+    }
+
+
+def generate_ai_explanation_fewshot(
+    user_prefs: Dict,
+    song: Dict,
+    score: float,
+    rule_reasons: List[str],
+) -> str:
+    """
+    Step 4 variant — few-shot specialization.
+
+    Uses 3 hand-crafted examples to constrain Claude to a specific
+    'warm vinyl DJ' voice: sensory language, no hedging, one punchy sentence.
+    Output measurably differs from the zero-shot generate_ai_explanation():
+      - Shorter sentences
+      - Metaphor/sensory imagery over feature description
+      - No phrases like 'perfectly matches' or 'ideal for'
+
+    Falls back to the zero-shot version if the API is unavailable.
+    """
+    client = _get_client()
+    if client is None:
+        return ", ".join(rule_reasons)
+
+    # Build the few-shot block
+    examples_block = "\n\n".join(
+        f"Song: {ex['song']}\nContext: {ex['context']}\nExplanation: {ex['explanation']}"
+        for ex in _FEW_SHOT_EXAMPLES
+    )
+
+    prompt = (
+        "You write music recommendations in a warm, sensory, vinyl-DJ voice. "
+        "One sentence. No hedging. Use a concrete image or feeling, not feature names.\n\n"
+        "Examples:\n\n"
+        f"{examples_block}\n\n"
+        "---\n"
+        f"Song: \"{song['title']}\" by {song['artist']}\n"
+        f"Context: listener wants {user_prefs['genre']}, {user_prefs['mood']}, "
+        f"energy={user_prefs['target_energy']:.2f}, "
+        f"acoustic={'yes' if user_prefs['likes_acoustic'] else 'no'}\n"
+        "Explanation:"
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        explanation = response.content[0].text.strip().lstrip("Explanation:").strip()
+        logger.debug("Few-shot explanation for '%s': %s", song["title"], explanation)
+        return explanation
+    except Exception as exc:
+        logger.warning(
+            "Few-shot explanation failed for '%s' (%s); falling back to zero-shot.",
+            song.get("title", "unknown"), exc,
+        )
+        return generate_ai_explanation(user_prefs, song, score, rule_reasons)
 
 
 def _keyword_parse(text: str) -> Dict:
