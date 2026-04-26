@@ -1,5 +1,8 @@
+import logging
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Song:
@@ -37,13 +40,48 @@ class Recommender:
     def __init__(self, songs: List[Song]):
         self.songs = songs
 
+    def _score_song_obj(self, user: UserProfile, song: Song) -> Tuple[float, List[str]]:
+        score = 0.0
+        reasons = []
+
+        if song.genre == user.favorite_genre:
+            score += 2.0
+            reasons.append("genre match (+2.0)")
+
+        if song.mood == user.favorite_mood:
+            score += 1.0
+            reasons.append("mood match (+1.0)")
+
+        energy_proximity = 1.0 - abs(user.target_energy - song.energy)
+        score += 1.0 * energy_proximity
+        reasons.append(f"energy proximity (+{energy_proximity:.2f})")
+
+        acousticness_target = 0.8 if user.likes_acoustic else 0.2
+        acousticness_proximity = 1.0 - abs(acousticness_target - song.acousticness)
+        score += 0.5 * acousticness_proximity
+        reasons.append(f"acousticness proximity (+{acousticness_proximity:.2f})")
+
+        return score, reasons
+
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        # TODO: Implement recommendation logic
-        return self.songs[:k]
+        logger.debug("Recommender.recommend called: genre=%s mood=%s energy=%.2f k=%d",
+                     user.favorite_genre, user.favorite_mood, user.target_energy, k)
+        scored = []
+        for song in self.songs:
+            score, _ = self._score_song_obj(user, song)
+            scored.append((song, score))
+
+        scored.sort(key=lambda x: (x[1], -abs(user.target_energy - x[0].energy)), reverse=True)
+        results = [s for s, _ in scored[:k]]
+        logger.debug("Top recommendation: %s (score=%.2f)", results[0].title if results else "none",
+                     scored[0][1] if scored else 0)
+        return results
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        # TODO: Implement explanation logic
-        return "Explanation placeholder"
+        _, reasons = self._score_song_obj(user, song)
+        explanation = ", ".join(reasons)
+        logger.debug("Explanation for '%s': %s", song.title, explanation)
+        return explanation
 
 def load_songs(csv_path: str) -> List[Dict]:
     """Read songs.csv and return a list of dicts with numeric fields cast to int/float."""
@@ -64,39 +102,48 @@ def load_songs(csv_path: str) -> List[Dict]:
                 "danceability": float(row["danceability"]),
                 "acousticness": float(row["acousticness"]),
             })
+    logger.info("Loaded %d songs from %s", len(songs), csv_path)
     return songs
 
+
 def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
-    """Score one song 0–4.5 pts using genre (+2.0), mood (+1.0), energy (+1.0), and acousticness (+0.5) signals; return (score, reasons)."""
+    """Score one song 0–4.5 pts using genre (+2.0), mood (+1.0), energy (+1.0), and acousticness (+0.5)."""
     score = 0.0
     reasons = []
 
-    # Genre match (+2.0)
     if song["genre"] == user_prefs["genre"]:
         score += 2.0
-        reasons.append(f"genre match (+2.0)")
+        reasons.append("genre match (+2.0)")
 
-    # Mood match (+1.0)
     if song["mood"] == user_prefs["mood"]:
         score += 1.0
-        reasons.append(f"mood match (+1.0)")
+        reasons.append("mood match (+1.0)")
 
-    # Energy proximity (+1.0 × proximity)
     energy_proximity = 1.0 - abs(user_prefs["target_energy"] - song["energy"])
     score += 1.0 * energy_proximity
     reasons.append(f"energy proximity (+{1.0 * energy_proximity:.2f})")
 
-    # Acousticness proximity (+0.5 × proximity)
     target_acousticness = 0.8 if user_prefs["likes_acoustic"] else 0.2
     acousticness_proximity = 1.0 - abs(target_acousticness - song["acousticness"])
     score += 0.5 * acousticness_proximity
     reasons.append(f"acousticness proximity (+{0.5 * acousticness_proximity:.2f})")
 
+    logger.debug("Scored '%s': %.2f  [%s]", song["title"], score, ", ".join(reasons))
     return score, reasons
 
 
 def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
-    """Score every song, sort descending, and return the top-k as (song, score, explanation) tuples."""
+    """Score every song, sort descending, return top-k as (song, score, explanation) tuples."""
+    if not songs:
+        logger.warning("recommend_songs called with empty catalog")
+        return []
+
+    logger.info(
+        "recommend_songs: genre=%s mood=%s energy=%.2f acoustic=%s k=%d",
+        user_prefs.get("genre"), user_prefs.get("mood"),
+        user_prefs.get("target_energy", 0), user_prefs.get("likes_acoustic"), k,
+    )
+
     scored = []
     for song in songs:
         score, reasons = score_song(user_prefs, song)
@@ -104,4 +151,7 @@ def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tup
         scored.append((song, score, explanation))
 
     scored.sort(key=lambda x: (x[1], -abs(user_prefs["target_energy"] - x[0]["energy"])), reverse=True)
-    return scored[:k]
+    results = scored[:k]
+    if results:
+        logger.info("Top result: '%s' score=%.2f", results[0][0]["title"], results[0][1])
+    return results
