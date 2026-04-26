@@ -128,6 +128,78 @@ flowchart TD
 
 ---
 
+## System Architecture
+
+The diagram below shows the full pipeline — from human input through the AI layer and scoring engine to the final ranked output, with testing and logging shown as cross-cutting concerns.
+
+```mermaid
+flowchart TD
+    subgraph INPUT["Human Input"]
+        A1(["Natural language\ne.g. 'chill music for studying'"])
+        A2(["Structured profile\ngenre · mood · energy · acoustic"])
+    end
+
+    subgraph AI_PARSE["Step 1 — Preference Parsing   src/ai_layer.py"]
+        B_gate{ANTHROPIC_API_KEY\nset?}
+        B_claude["☁ Claude Haiku\ntool-use extraction"]
+        B_kw["Keyword fallback\nparser (no API needed)"]
+    end
+
+    subgraph ENGINE["Step 2 — Scoring & Ranking   src/recommender.py"]
+        C_score["score_song\n+2.0 genre · +1.0 mood\n+1.0 energy · +0.5 acoustic"]
+        C_rank["Sort descending · slice top-k"]
+        C_data[("songs.csv\n19 songs")]
+    end
+
+    subgraph AI_EXPLAIN["Step 3 — Explanation   src/ai_layer.py"]
+        E_gate{API key\navailable?}
+        E_claude["☁ Claude Haiku\nconversational sentence"]
+        E_rule["Rule-based fallback\n'genre match (+2.0), ...'"]
+    end
+
+    subgraph OUTPUT["Output"]
+        F(["Ranked songs\ntitle · score · explanation"])
+    end
+
+    subgraph QUALITY["Testing & Observability"]
+        T1["pytest · 24 tests\nscoring correctness\nmocked Claude contracts"]
+        T2["Structured logging\nINFO every query & score\nDEBUG per-song detail"]
+    end
+
+    A1 --> B_gate
+    A2 -->|"--ai flag absent\nskip parsing"| C_score
+
+    B_gate -- Yes --> B_claude --> C_score
+    B_gate -- No  --> B_kw    --> C_score
+
+    C_data --> C_score
+    C_score --> C_rank
+
+    C_rank --> E_gate
+    E_gate -- Yes --> E_claude --> F
+    E_gate -- "No / error" --> E_rule --> F
+
+    T1 -. "verifies scoring math" .-> ENGINE
+    T1 -. "mocks API calls\nverifies fallback" .-> AI_PARSE
+    T1 -. "verifies fallback\non exception" .-> AI_EXPLAIN
+    T2 -. "logs all queries & top scores" .-> ENGINE
+    T2 -. "logs parse source\n(Claude vs keyword)" .-> AI_PARSE
+```
+
+### Component summary
+
+| Component | File | Role |
+|---|---|---|
+| **CLI runner** | `src/main.py` | Entry point; routes structured vs. natural-language mode |
+| **AI Layer — parser** | `src/ai_layer.py · parse_user_query` | Converts free text to `{genre, mood, energy, acoustic}` via Claude tool-use; falls back to keyword parsing without a key |
+| **AI Layer — explainer** | `src/ai_layer.py · generate_ai_explanation` | Generates a conversational sentence per recommendation; falls back to rule-based string on error |
+| **Recommender engine** | `src/recommender.py` | Scores every song 0–4.5 pts, sorts, returns top-k |
+| **Song catalog** | `data/songs.csv` | 19 songs with genre, mood, energy, acousticness, etc. |
+| **Test suite** | `tests/test_recommender.py` | 24 tests: scoring logic (no API) + Claude contracts (mocked) |
+| **Logging** | built-in `logging` | Structured `INFO`/`DEBUG` output traces every query, score, and AI call |
+
+---
+
 ## Getting Started
 
 ### Setup
