@@ -1,0 +1,19 @@
+flowchart TD
+    A(["User Preferences
+genre · mood · target_energy · likes_acoustic"]) --> B
+    B[Load songs.csv] --> C
+    C(["For each song
+in catalog"]) --> D
+    D[Score = 0] --> E
+    E{genre matches?}
+    E -- Yes --> F[+2.0]
+    E -- No  --> G
+    F --> G{mood matches?}
+    G -- Yes --> H[+1.0]
+    G -- No  --> I
+    H --> I[+1.0 × energy proximity]
+    I --> J[+0.5 × acousticness proximity]
+    J --> K[(scored_songs list · max 4.5)]
+    C -- all done --> K
+    K --> L[Sort descending · slice top-k]
+    L --> M([Output: title · score · explanation])

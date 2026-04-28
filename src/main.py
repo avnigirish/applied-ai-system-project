@@ -12,6 +12,9 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Ensure src/ is on the path regardless of how this module is invoked.
 sys.path.insert(0, os.path.dirname(__file__))
 

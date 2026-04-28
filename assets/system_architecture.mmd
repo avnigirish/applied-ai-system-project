@@ -1,0 +1,91 @@
+flowchart TD
+    subgraph INPUT["Human Input"]
+        A1(["Natural language
+e.g. 'chill music for studying'"])
+        A2(["Structured profile
+genre · mood · energy · acoustic"])
+    end
+
+    subgraph AI_PARSE["Step 1 — Preference Parsing   src/ai_layer.py"]
+        B_gate{GEMINI_API_KEY
+set?}
+        B_gemini["☁ Gemini Flash
+function-calling extraction"]
+        B_kw["Keyword fallback
+parser (no API needed)"]
+    end
+
+    subgraph CATALOG["Step 2 — Catalog Reasoning   src/ai_layer.py"]
+        CR_gate{GEMINI_API_KEY
+set?}
+        CR_gemini["☁ Gemini Flash
+catalog_decision function call"]
+        CR_rule["Rule-based fallback
+_GENRE_FALLBACKS map"]
+        CR_out(["proceed /
+suggest_alternative /
+warn_degraded"])
+    end
+
+    subgraph ENGINE["Step 3 — Scoring & Ranking   src/recommender.py"]
+        C_score["score_song
++2.0 genre · +1.0 mood
++1.0 energy · +0.5 acoustic"]
+        C_rank["Sort descending · slice top-k"]
+        C_data[("songs.csv
+19 songs")]
+    end
+
+    subgraph AI_EXPLAIN["Step 4 — Explanation   src/ai_layer.py"]
+        E_gate{GEMINI_API_KEY
+set?}
+        E_gemini["☁ Gemini Flash
+conversational sentence
+(zero-shot or few-shot)"]
+        E_rule["Rule-based fallback
+'genre match (+2.0), ...'"]
+    end
+
+    subgraph OUTPUT["Output"]
+        F(["Ranked songs
+title · score · explanation"])
+    end
+
+    subgraph QUALITY["Testing & Observability"]
+        T1["pytest · 33 tests
+scoring correctness
+mocked Gemini contracts"]
+        T2["Structured logging
+INFO every query & score
+DEBUG per-song detail"]
+    end
+
+    A1 --> B_gate
+    A2 -->|"--ai flag absent
+skip parsing"| CR_gate
+
+    B_gate -- Yes --> B_gemini --> CR_gate
+    B_gate -- No  --> B_kw    --> CR_gate
+
+    CR_gate -- Yes --> CR_gemini --> CR_out
+    CR_gate -- No  --> CR_rule  --> CR_out
+
+    CR_out -->|"suggest_alternative:
+swap genre"| C_score
+    CR_out -->|"proceed / warn_degraded"| C_score
+
+    C_data --> C_score
+    C_score --> C_rank
+
+    C_rank --> E_gate
+    E_gate -- Yes --> E_gemini --> F
+    E_gate -- "No / error" --> E_rule --> F
+
+    T1 -. "verifies scoring math" .-> ENGINE
+    T1 -. "mocks API calls
+verifies fallback" .-> AI_PARSE
+    T1 -. "verifies fallback
+on exception" .-> AI_EXPLAIN
+    T2 -. "logs all queries & top scores" .-> ENGINE
+    T2 -. "logs parse source
+(Gemini vs keyword)" .-> AI_PARSE

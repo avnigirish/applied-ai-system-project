@@ -1,6 +1,9 @@
-# VibeFinder 1.0 — AI Music Recommender
+# MoodTrack 1.0 — AI Music Recommender
 
-A content-based music recommender that scores songs against a listener's taste profile and explains every recommendation. Accepts both natural-language queries ("something chill for studying") and structured profiles, with an optional Claude AI layer that upgrades plain-text input into structured preferences and rewrites scoring math into conversational explanations.
+A content-based music recommender that scores songs against a listener's taste profile and explains every recommendation. Accepts both natural-language queries ("something chill for studying") and structured profiles, with an optional Gemini AI layer that upgrades plain-text input into structured preferences and rewrites scoring math into conversational explanations.
+
+**Loom walkthrough:** [add link here after recording]
+**GitHub:** [applied-ai-system-project](https://github.com/avnigirish/applied-ai-system-project)
 
 ---
 
@@ -8,7 +11,7 @@ A content-based music recommender that scores songs against a listener's taste p
 
 This project originated as a **Module 1–3 simulation** of how streaming platforms like Spotify build content-based recommenders. The original goal was to represent songs and user preferences as data, design a transparent weighted scoring rule, and evaluate where the algorithm succeeded and where it failed. That version was purely rule-based: four features (genre, mood, energy, acousticness) combined into an additive point system with a max score of 4.5, no external APIs, and no natural-language input.
 
-The final version extends that foundation with a Claude AI layer that translates free-text listener requests into structured preferences and rewrites raw scoring math into human-readable explanations — making the system behave more like a real assistant and less like a spreadsheet.
+The final version extends that foundation with a Gemini AI layer that translates free-text listener requests into structured preferences and rewrites raw scoring math into human-readable explanations — making the system behave more like a real assistant and less like a spreadsheet.
 
 ---
 
@@ -17,7 +20,7 @@ The final version extends that foundation with a Claude AI layer that translates
 | Mode | Input | AI involved |
 |---|---|---|
 | Standard | Structured profile dict | None — rule-based only |
-| Natural-language | Free text | Claude Haiku parses preferences + writes explanations |
+| Natural-language | Free text | Gemini Flash parses preferences + writes explanations |
 | Natural-language (no key) | Free text | Keyword fallback parser + rule-based explanations |
 
 Every recommendation returns:
@@ -34,64 +37,106 @@ Every recommendation returns:
 ```mermaid
 flowchart TD
     subgraph INPUT["Human Input"]
-        A1(["Natural language\ne.g. 'chill music for studying'"])
-        A2(["Structured profile\ngenre · mood · energy · acoustic"])
+        A1(["Natural language
+e.g. 'chill music for studying'"])
+        A2(["Structured profile
+genre · mood · energy · acoustic"])
     end
 
     subgraph AI_PARSE["Step 1 — Preference Parsing   src/ai_layer.py"]
-        B_gate{ANTHROPIC_API_KEY\nset?}
-        B_claude["☁ Claude Haiku\ntool-use extraction"]
-        B_kw["Keyword fallback\nparser (no API needed)"]
+        B_gate{GEMINI_API_KEY
+set?}
+        B_gemini["☁ Gemini Flash
+function-calling extraction"]
+        B_kw["Keyword fallback
+parser (no API needed)"]
     end
 
-    subgraph ENGINE["Step 2 — Scoring & Ranking   src/recommender.py"]
-        C_score["score_song\n+2.0 genre · +1.0 mood\n+1.0 energy · +0.5 acoustic"]
+    subgraph CATALOG["Step 2 — Catalog Reasoning   src/ai_layer.py"]
+        CR_gate{GEMINI_API_KEY
+set?}
+        CR_gemini["☁ Gemini Flash
+catalog_decision function call"]
+        CR_rule["Rule-based fallback
+_GENRE_FALLBACKS map"]
+        CR_out(["proceed /
+suggest_alternative /
+warn_degraded"])
+    end
+
+    subgraph ENGINE["Step 3 — Scoring & Ranking   src/recommender.py"]
+        C_score["score_song
++2.0 genre · +1.0 mood
++1.0 energy · +0.5 acoustic"]
         C_rank["Sort descending · slice top-k"]
-        C_data[("songs.csv\n19 songs")]
+        C_data[("songs.csv
+19 songs")]
     end
 
-    subgraph AI_EXPLAIN["Step 3 — Explanation   src/ai_layer.py"]
-        E_gate{API key\navailable?}
-        E_claude["☁ Claude Haiku\nconversational sentence"]
-        E_rule["Rule-based fallback\n'genre match (+2.0), ...'"]
+    subgraph AI_EXPLAIN["Step 4 — Explanation   src/ai_layer.py"]
+        E_gate{GEMINI_API_KEY
+set?}
+        E_gemini["☁ Gemini Flash
+conversational sentence
+(zero-shot or few-shot)"]
+        E_rule["Rule-based fallback
+'genre match (+2.0), ...'"]
     end
 
     subgraph OUTPUT["Output"]
-        F(["Ranked songs\ntitle · score · explanation"])
+        F(["Ranked songs
+title · score · explanation"])
     end
 
     subgraph QUALITY["Testing & Observability"]
-        T1["pytest · 24 tests\nscoring correctness\nmocked Claude contracts"]
-        T2["Structured logging\nINFO every query & score\nDEBUG per-song detail"]
+        T1["pytest · 33 tests
+scoring correctness
+mocked Gemini contracts"]
+        T2["Structured logging
+INFO every query & score
+DEBUG per-song detail"]
     end
 
     A1 --> B_gate
-    A2 -->|"--ai flag absent\nskip parsing"| C_score
+    A2 -->|"--ai flag absent
+skip parsing"| CR_gate
 
-    B_gate -- Yes --> B_claude --> C_score
-    B_gate -- No  --> B_kw    --> C_score
+    B_gate -- Yes --> B_gemini --> CR_gate
+    B_gate -- No  --> B_kw    --> CR_gate
+
+    CR_gate -- Yes --> CR_gemini --> CR_out
+    CR_gate -- No  --> CR_rule  --> CR_out
+
+    CR_out -->|"suggest_alternative:
+swap genre"| C_score
+    CR_out -->|"proceed / warn_degraded"| C_score
 
     C_data --> C_score
     C_score --> C_rank
 
     C_rank --> E_gate
-    E_gate -- Yes --> E_claude --> F
+    E_gate -- Yes --> E_gemini --> F
     E_gate -- "No / error" --> E_rule --> F
 
     T1 -. "verifies scoring math" .-> ENGINE
-    T1 -. "mocks API calls\nverifies fallback" .-> AI_PARSE
-    T1 -. "verifies fallback\non exception" .-> AI_EXPLAIN
+    T1 -. "mocks API calls
+verifies fallback" .-> AI_PARSE
+    T1 -. "verifies fallback
+on exception" .-> AI_EXPLAIN
     T2 -. "logs all queries & top scores" .-> ENGINE
-    T2 -. "logs parse source\n(Claude vs keyword)" .-> AI_PARSE
+    T2 -. "logs parse source
+(Gemini vs keyword)" .-> AI_PARSE
 ```
 
 ### Scoring sub-flow (inside the engine)
 
 ```mermaid
 flowchart TD
-    A([User Preferences\ngenre · mood · target_energy · likes_acoustic]) --> B
+    A(["User Preferences
+genre · mood · target_energy · likes_acoustic"]) --> B
     B[Load songs.csv] --> C
-    C{For each song\nin catalog} --> D
+    C(["For each song
+in catalog"]) --> D
     D[Score = 0] --> E
     E{genre matches?}
     E -- Yes --> F[+2.0]
@@ -112,11 +157,12 @@ flowchart TD
 | Component | File | Role |
 |---|---|---|
 | CLI runner | `src/main.py` | Entry point; routes structured vs. natural-language mode |
-| AI Layer — parser | `src/ai_layer.py` | Converts free text to `{genre, mood, energy, acoustic}` via Claude tool-use; falls back to keyword parsing without a key |
+| AI Layer — parser | `src/ai_layer.py` | Converts free text to `{genre, mood, energy, acoustic}` via Gemini function calling; falls back to keyword parsing without a key |
+| AI Layer — catalog reasoning | `src/ai_layer.py` | Detects when the requested genre is absent from the catalog; decides whether to proceed, adapt, or warn |
 | AI Layer — explainer | `src/ai_layer.py` | Generates a conversational sentence per recommendation; falls back to rule-based string on error |
 | Recommender engine | `src/recommender.py` | Scores every song 0–4.5 pts, sorts, returns top-k |
 | Song catalog | `data/songs.csv` | 19 songs with genre, mood, energy, acousticness, tempo, valence, danceability |
-| Test suite | `tests/test_recommender.py` | 24 tests: scoring correctness (no API) + Claude contracts (mocked) |
+| Test suite | `tests/test_recommender.py` | 33 tests: scoring correctness (no API) + Gemini contracts (mocked) |
 
 ---
 
@@ -133,19 +179,21 @@ source .venv/bin/activate      # Mac / Linux
 pip install -r requirements.txt
 ```
 
-### 2. (Optional) Add your Anthropic API key
+### 2. (Optional) Add your Gemini API key
 
-The standard mode and the natural-language keyword fallback work with no API key. To enable Claude-powered parsing and explanations:
+The standard mode and the natural-language keyword fallback work with no API key. To enable Gemini-powered parsing, catalog reasoning, and explanations:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export GEMINI_API_KEY=your-key-here
 ```
 
-Or add it to a `.env` file (never commit this):
+Or add it to a `.env` file (never commit this — it is already in `.gitignore`):
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=your-key-here
 ```
+
+Get a free key at [aistudio.google.com](https://aistudio.google.com). The system uses `gemini-2.5-flash`.
 
 ### 3. Run
 
@@ -166,7 +214,7 @@ python -m src.main --ai
 pytest
 ```
 
-All 24 tests run without an API key (Claude calls are mocked).
+All 33 tests run without an API key (Gemini calls are mocked).
 
 ### Optional: verbose logging
 
@@ -237,12 +285,12 @@ Profile: AI Query: 'I want something chill for studying late at night'
 
 ---
 
-### Interaction 3 — Natural-language mode with Claude AI
+### Interaction 3 — Natural-language mode with Gemini AI
 
-**Input:** `python -m src.main --ai "something melancholic and slow, very acoustic"` (with `ANTHROPIC_API_KEY` set)
+**Input:** `python -m src.main --ai "something melancholic and slow, very acoustic"` (with `GEMINI_API_KEY` set)
 
 ```
-16:45:10  INFO  ai_layer — Parsed preferences via Claude: genre=classical mood=melancholic energy=0.25 acoustic=True
+16:45:10  INFO  ai_layer — Parsed preferences via Gemini: genre=classical mood=melancholic energy=0.25 acoustic=True
 
 Profile: AI Query: 'something melancholic and slow, very acoustic'
   genre='classical', mood='melancholic', energy=0.25, acoustic=True
@@ -261,7 +309,7 @@ Profile: AI Query: 'something melancholic and slow, very acoustic'
                low-energy, acoustic preference.
 ```
 
-**What this shows:** With an API key, Claude extracts structured preferences from a vague natural-language request and writes conversational explanations instead of raw scoring math — the output reads like a recommendation, not a formula.
+**What this shows:** With an API key, Gemini extracts structured preferences from a vague natural-language request and writes conversational explanations instead of raw scoring math — the output reads like a recommendation, not a formula.
 
 ---
 
@@ -293,9 +341,9 @@ The system uses four features with explicit point values (genre +2.0, mood +1.0,
 
 Genre is the strongest taste boundary a listener has. A jazz fan is unlikely to enjoy EDM regardless of energy level. The +2.0 weight reflects that assumption. However, this becomes a flaw in a sparse catalog: with one song per genre, a genre match automatically surfaces that song as #1 regardless of other signals. The right fix is a larger catalog, not a lower weight.
 
-### Why Claude for natural-language parsing?
+### Why Gemini for natural-language parsing?
 
-The alternative was a regex or rule-based keyword parser (which does exist as a fallback). But keyword matching fails on phrasing like "I want music that sounds like a late Sunday morning" — there's no keyword for that. Claude's tool-use API converts ambiguous natural language into a strictly-typed JSON object, making the output safe to pass directly into the scoring engine without validation gymnastics.
+The alternative was a regex or rule-based keyword parser (which does exist as a fallback). But keyword matching fails on phrasing like "I want music that sounds like a late Sunday morning" — there's no keyword for that. Gemini's function-calling API converts ambiguous natural language into a strictly-typed JSON object, making the output safe to pass directly into the scoring engine without validation gymnastics.
 
 ### Why a keyword fallback at all?
 
@@ -307,7 +355,7 @@ Requiring an API key to run any part of the program creates a hard dependency th
 |---|---|---|
 | Weighted points (not ML weights) | Fully transparent and auditable | Can't adapt to user behavior over time |
 | Binary mood matching | Simple, predictable | "Chill" and "relaxed" score identically to unrelated moods |
-| Claude for parsing | Handles ambiguous language well | Adds API dependency and latency |
+| Gemini for parsing | Handles ambiguous language well | Adds API dependency and latency |
 | Keyword fallback | Works offline, no key needed | Less accurate on unusual phrasing |
 | Small static catalog | Easy to inspect and reason about | Genre lock-in — one song per genre makes genre weight near-deterministic |
 
@@ -325,7 +373,7 @@ Run with `pytest`. 24 tests, all pass, no API key required, completes in under 1
 |---|---|---|
 | Recommender engine | 13 | Wrong sort order, bad scores, off-by-one on `k`, empty-catalog crash |
 | Keyword parser | 5 | Missing output keys, out-of-range energy, wrong genre/mood for known phrases |
-| Claude API contracts (mocked) | 6 | Tool-use call shape, graceful fallback on exception, fallback when no key set |
+| Gemini API contracts (mocked) | 15 | Function-call shape, graceful fallback on exception, fallback when no key set, catalog reasoning decisions, few-shot path |
 
 ### 2. Confidence scoring — built into every recommendation
 
@@ -384,7 +432,7 @@ Every run emits `INFO`-level logs for each query (genre, mood, energy, k), the t
 
 ### What worked
 
-The scoring engine is fully deterministic, so unit tests always pass and the evaluation harness always produces the same numbers. Mocking the Claude client with `unittest.mock` kept all 24 tests under 1 second and independent of network state. Separating *consistency* from *quality* in the eval harness was the most useful decision — it forced an honest accounting of where the system is reliable vs. where it's reliably wrong.
+The scoring engine is fully deterministic, so unit tests always pass and the evaluation harness always produces the same numbers. Mocking the Gemini client with `unittest.mock` kept all 33 tests under 1 second and independent of network state. Separating *consistency* from *quality* in the eval harness was the most useful decision — it forced an honest accounting of where the system is reliable vs. where it's reliably wrong.
 
 ### What didn't work initially
 
@@ -392,7 +440,7 @@ The `Recommender` class stubs returned `self.songs[:k]` and `"Explanation placeh
 
 ### What this taught about testing AI systems
 
-**Mocking is not the same as evaluating.** The mocked Claude tests verify that the code calls the API correctly and handles failures gracefully — but they say nothing about whether Claude actually returns good preferences for a given query. That quality check requires running against the live model and reviewing outputs by hand, which is what the eval harness approximates. The confidence score made one problem immediately visible that the raw scores hid: the "bossa nova" profile's best result (2.44/4.50, confidence 0.54) looks like a reasonable score on paper, but the `medium` band and the `DEGRADED RESULTS` log warning signal that the system is operating outside its reliable range — something a user reading only the ranked list would never know.
+**Mocking is not the same as evaluating.** The mocked Gemini tests verify that the code calls the API correctly and handles failures gracefully — but they say nothing about whether Gemini actually returns good preferences for a given query. That quality check requires running against the live model and reviewing outputs by hand, which is what the eval harness approximates. The confidence score made one problem immediately visible that the raw scores hid: the "bossa nova" profile's best result (2.44/4.50, confidence 0.54) looks like a reasonable score on paper, but the `medium` band and the `DEGRADED RESULTS` log warning signal that the system is operating outside its reliable range — something a user reading only the ranked list would never know.
 
 ---
 
@@ -418,7 +466,7 @@ As a 19-song classroom demo, the direct misuse surface is small. But the same ar
 
 **Filter bubbles.** The scoring formula always returns the closest match, never deliberately surprising the user. Over time, this creates a feedback loop: a user who always asks for pop gets pop, stops being exposed to adjacent genres, and their taste profile narrows. Spotify explicitly injects serendipity into its recommendations to counteract this; this system has no equivalent mechanism.
 
-**Preference data collection.** In the Claude-powered mode, user queries (potentially including emotional context like "I'm feeling really sad today") are sent to an external API. Even though Anthropic has strong data policies, users should be informed when their input leaves the local system.
+**Preference data collection.** In the Gemini-powered mode, user queries (potentially including emotional context like "I'm feeling really sad today") are sent to an external API. Even though Google has strong data policies, users should be informed when their input leaves the local system.
 
 **Mitigation approaches that would matter at production scale:** make catalog provenance transparent, add a diversity mechanism that occasionally surfaces results outside the closest match, and add a clear disclosure whenever user input is sent to an external service.
 
@@ -444,7 +492,7 @@ Good logging doesn't just record what happened — it tells you *why* the output
 ### Collaboration with AI during this project
 
 **One instance where the AI gave a genuinely helpful suggestion:**
-When building the natural-language input mode, I initially planned to write a regex-based parser. The AI suggested using Claude's tool-use API instead, where the model is forced to populate a typed JSON schema rather than return free text. This turned out to be the right call — it eliminated an entire category of output-validation code. The tool-use constraint means Claude can't return a malformed preference object: either it fills in all four required fields with the right types, or the call fails with a clear error. That's a meaningfully better design than parsing unstructured text.
+When building the natural-language input mode, I initially planned to write a regex-based parser. The AI suggested using Gemini's function-calling API instead, where the model is forced to populate a typed JSON schema rather than return free text. This turned out to be the right call — it eliminated an entire category of output-validation code. The function-calling constraint means Gemini can't return a malformed preference object: either it fills in all four required fields with the right types, or the call fails with a clear error. That's a meaningfully better design than parsing unstructured text.
 
 **One instance where the AI's suggestion was flawed:**
 When I first ran `python -m src.main`, the imports broke with `ModuleNotFoundError: No module named 'recommender'`. The AI had written the imports as bare names (`from recommender import ...`) — which works when you run the file directly from inside `src/`, but fails when Python is invoked from the project root, because `python -m src.main` adds the root directory to `sys.path`, not `src/`. The fix was one line (`sys.path.insert(0, os.path.dirname(__file__))`), but the original suggestion assumed a specific working directory without making that assumption explicit or testing it. The AI could reason about the code but couldn't anticipate how the module system would behave across different invocation contexts — that required running it and observing the failure.
@@ -457,7 +505,7 @@ Building this system clarified something that's easy to miss when using AI tools
 
 The adversarial testing was the most instructive part. The "High Energy + Sad Mood" profile returned a quiet soul ballad as its top result, and the score of 3.58 looked perfectly reasonable on paper — nothing in the output signaled a problem. That gap between "score looks valid" and "recommendation is wrong" is exactly what makes bias hard to catch in production systems. Spotify or YouTube can't easily explain why a specific song appeared in your feed, and even when the system is fully transparent (as this one is), a confident-looking score can mask a fundamental mismatch. The lesson is that you have to deliberately design test cases for failure, especially cases where user preferences conflict with each other or with the catalog — because those are the conditions where surface-level scores are most misleading.
 
-Adding the Claude layer reinforced a different lesson: **language is where the hard work is**. The scoring engine was straightforward to build and debug. The challenge was bridging the gap between how people actually describe what they want ("something like a late Sunday morning") and the structured representation the engine needs (`{genre, mood, energy, acoustic}`). That translation — from messy human intent to clean machine input — is where LLMs add the most practical value, and also where the most failure modes live.
+Adding the Gemini layer reinforced a different lesson: **language is where the hard work is**. The scoring engine was straightforward to build and debug. The challenge was bridging the gap between how people actually describe what they want ("something like a late Sunday morning") and the structured representation the engine needs (`{genre, mood, energy, acoustic}`). That translation — from messy human intent to clean machine input — is where LLMs add the most practical value, and also where the most failure modes live.
 
 ---
 
@@ -479,16 +527,16 @@ Result: **6/6 consistency, 4/6 quality, avg confidence 0.88**.
 
 ### 2. Agentic Workflow Enhancement (+2 pts)
 
-The original workflow had two Claude calls (parse → explain) with no observable intermediate state. The enhanced version is a **four-step chain where every step prints its output** before the next begins:
+The original workflow had two Gemini calls (parse → explain) with no observable intermediate state. The enhanced version is a **four-step chain where every step prints its output** before the next begins:
 
 ```
-[Step 1/4] Parsing query → structured preferences        (Claude tool-use)
-[Step 2/4] Catalog reasoning → proceed / adapt / warn    (Claude tool-use, NEW)
+[Step 1/4] Parsing query → structured preferences        (Gemini function calling)
+[Step 2/4] Catalog reasoning → proceed / adapt / warn    (Gemini function calling)
 [Step 3/4] Scoring 19 songs → ranked results             (rule-based engine)
-[Step 4/4] Generating explanations → final output        (Claude, zero-shot or few-shot)
+[Step 4/4] Generating explanations → final output        (Gemini, zero-shot or few-shot)
 ```
 
-Step 2 is the new reasoning step. Claude receives the user's preferences alongside the full list of available catalog genres and moods, then uses a typed tool to output a decision plus one-sentence reasoning. This makes the agent's decision-making observable rather than silent.
+Step 2 is the new reasoning step. Gemini receives the user's preferences alongside the full list of available catalog genres and moods, then uses a typed function call to output a decision plus one-sentence reasoning. This makes the agent's decision-making observable rather than silent.
 
 **Sample output — query with a missing genre (bossa nova):**
 
@@ -509,13 +557,13 @@ Step 2 is the new reasoning step. Claude receives the user's preferences alongsi
 
 Without the reasoning step, the system would silently degrade to mood/energy fallbacks and return Dust Road Home with a score of 2.44. With it, the agent detects the gap, explains its reasoning aloud, and adapts — returning Coffee Shop Stories at 4.35 instead.
 
-**Fallback (no API key):** uses the `_GENRE_FALLBACKS` mapping (bossa nova → jazz, blues → soul, etc.) so the adaptation step still works offline.
+**Fallback (no API key or quota exceeded):** uses the `_GENRE_FALLBACKS` mapping (bossa nova → jazz, blues → soul, etc.) so the adaptation step still works offline.
 
 ---
 
 ### 3. Fine-Tuning / Specialization (+2 pts)
 
-`generate_ai_explanation_fewshot()` in [src/ai_layer.py](src/ai_layer.py) uses **3 hand-crafted few-shot examples** to constrain Claude to a specific "warm vinyl DJ" voice. The baseline zero-shot function describes features; the few-shot version uses sensory language and concrete images.
+`generate_ai_explanation_fewshot()` in [src/ai_layer.py](src/ai_layer.py) uses **3 hand-crafted few-shot examples** to constrain Gemini to a specific "warm vinyl DJ" voice. The baseline zero-shot function describes features; the few-shot version uses sensory language and concrete images.
 
 **How to use:**
 
@@ -539,7 +587,7 @@ python -m src.main --ai "something chill for late night studying" --style vinyl
 | Uses sensory/metaphor language | No | Yes |
 | Avg sentence length | ~22 words | ~18 words |
 
-The few-shot prompt embeds the three examples directly in the system message. Without an API key, the function falls back to the rule-based explanation string.
+The few-shot prompt embeds the three examples directly in the prompt. Without an API key (or when quota is exceeded), the function falls back to the rule-based explanation string.
 
 ---
 
@@ -557,10 +605,10 @@ New tests added:
 - `test_catalog_reasoning_suggests_alternative_for_known_genre`
 - `test_catalog_reasoning_warns_degraded_for_unknown_genre`
 - `test_catalog_reasoning_returns_all_required_keys`
-- `test_catalog_reasoning_calls_claude`
+- `test_catalog_reasoning_calls_gemini`
 - `test_catalog_reasoning_falls_back_on_exception`
 - `test_fewshot_explanation_fallback_without_key`
-- `test_fewshot_explanation_calls_claude`
+- `test_fewshot_explanation_calls_gemini`
 - `test_fewshot_prompt_includes_examples`
 
 ---
@@ -574,7 +622,7 @@ applied-ai-system-final/
 ├── src/
 │   ├── main.py                # CLI entry point; 4-step observable agentic chain
 │   ├── recommender.py         # Scoring engine, OOP interface, confidence scoring
-│   └── ai_layer.py            # Claude API: parse, catalog reasoning, explain (zero-shot + few-shot)
+│   └── ai_layer.py            # Gemini API: parse, catalog reasoning, explain (zero-shot + few-shot)
 ├── tests/
 │   ├── test_recommender.py    # 33 unit tests (no API key required)
 │   └── eval_reliability.py    # 6-case reliability harness with confidence scoring
@@ -589,3 +637,9 @@ applied-ai-system-final/
 ## Model Card
 
 See [model_card.md](model_card.md) for a detailed breakdown of intended use, data, strengths, limitations, bias analysis, and future work.
+
+## Portfolio Reflection
+
+This project demonstrates that I can build an AI system end-to-end — not just prompt a model, but design the data layer, scoring logic, error handling, and tests that make the AI output trustworthy enough to act on. The work I'm most proud of is the reliability evaluation harness: instead of declaring the system "works" because it produces output, I separated *consistency* (does it always return the expected result?) from *quality* (is that result actually correct?), and measured both with real numbers. That distinction — between a system that is reliably consistent and one that is reliably *right* — only becomes visible when you design tests that are explicitly adversarial. I also care about transparency: every recommendation in this system carries a confidence score, and the logs surface a `DEGRADED RESULTS` warning the moment the system is operating outside its reliable range. As an AI engineer, I want to build systems that fail loudly and honestly rather than confidently and silently.
+
+---

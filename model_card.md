@@ -3,9 +3,9 @@
 ## 1. Model Name  
 
 Give your model a short, descriptive name.  
-Example: **VibeFinder 1.0**  
+Example: **MoodTrack 1.0**  
 
-- **VibeFinder 1.0** — a rule-based content recommender that matches songs to your current mood and energy level
+- **MoodTrack 1.0** — a rule-based content recommender that matches songs to your current mood and energy level
 
 ---
 
