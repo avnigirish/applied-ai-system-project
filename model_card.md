@@ -146,3 +146,21 @@ Prompts:
 - AI tools helped me write and iterate on the scoring logic quickly, but I had to run the system myself to discover that catalog size was the real problem. The AI could reason about weights in the abstract but couldn't predict how a 1-song-per-genre catalog would make the genre weight near-deterministic.
 - What surprised me most was how much the output "feels" like a recommendation even though it's just four arithmetic operations. When Gym Hero ranked #1 for the gym profile, it genuinely felt intentional — the illusion comes from picking the right features to measure, not from any complexity in the algorithm.
 - If I extended this project, I'd add tempo scoring, expand the catalog to 100+ songs, and try a simple collaborative filter on top: "users who liked X also liked Y."
+
+---
+
+## 10. AI Collaboration
+
+How AI tools were used during development, including where they helped and where they fell short.
+
+**One instance where the AI gave a genuinely helpful suggestion:**
+
+When building the natural-language input mode, I initially planned to write a regex-based parser. The AI suggested using Gemini's function-calling API instead, where the model is forced to populate a typed JSON schema rather than return free text. This turned out to be the right call — it eliminated an entire category of output-validation code. The function-calling constraint means Gemini can't return a malformed preference object: either it fills in all four required fields with the right types, or the call fails with a clear error. That's a meaningfully better design than parsing unstructured text.
+
+**One instance where the AI's suggestion was flawed:**
+
+When I first ran `python -m src.main`, the imports broke with `ModuleNotFoundError: No module named 'recommender'`. The AI had written the imports as bare names (`from recommender import ...`) — which works when you run the file directly from inside `src/`, but fails when Python is invoked from the project root, because `python -m src.main` adds the root directory to `sys.path`, not `src/`. The fix was one line (`sys.path.insert(0, os.path.dirname(__file__))`), but the original suggestion assumed a specific working directory without making that assumption explicit or testing it. The AI could reason about the code but couldn't anticipate how the module system would behave across different invocation contexts — that required running it and observing the failure.
+
+**What this taught about working with AI tools:**
+
+AI assistance was most valuable for generating boilerplate, reasoning about abstract tradeoffs, and suggesting architectural patterns (like function-calling over regex parsing). It was least reliable for anything that required running the code and observing system behavior — import paths, working directory assumptions, and catalog-size effects on scoring all required hands-on testing to surface. The AI could describe what the code *should* do; only running it revealed what it actually did.
