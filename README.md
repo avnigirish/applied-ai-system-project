@@ -2,7 +2,7 @@
 
 A content-based music recommender that scores songs against a listener's taste profile and explains every recommendation. Accepts both natural-language queries ("something chill for studying") and structured profiles, with an optional Gemini AI layer that upgrades plain-text input into structured preferences and rewrites scoring math into conversational explanations.
 
-**Loom walkthrough:** [add link here after recording]
+**Loom walkthrough:** [Loom walkthrough](https://www.loom.com/share/ef10894ad8704c70800ad21294bbbcab)
 **GitHub:** [applied-ai-system-project](https://github.com/avnigirish/applied-ai-system-project)
 
 ---
